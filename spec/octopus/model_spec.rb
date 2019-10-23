@@ -306,8 +306,13 @@ describe Octopus::Model do
 
   describe 'using a postgresql shard' do
     it 'should update the Arel Engine' do
-      expect(User.using(:postgresql_shard).arel_engine.connection.adapter_name).to eq('PostgreSQL')
-      expect(User.using(:alone_shard).arel_engine.connection.adapter_name).to eq('Mysql2')
+      if Octopus.atleast_rails52?
+        expect(User.using(:postgresql_shard).connection.adapter_name).to eq('PostgreSQL')
+        expect(User.using(:alone_shard).connection.adapter_name).to eq('Mysql2')
+      else 
+        expect(User.using(:postgresql_shard).arel_engine.connection.adapter_name).to eq('PostgreSQL')
+        expect(User.using(:alone_shard).arel_engine.connection.adapter_name).to eq('Mysql2')
+      end
     end
 
     it 'should works with writes and reads' do
@@ -391,6 +396,18 @@ describe Octopus::Model do
 
       expect(User.using(:brazil).maximum(:number)).to eq(11)
       expect(User.using(:master).maximum(:number)).to eq(12)
+    end
+
+    it 'sum' do
+      u = User.using(:brazil).create!(:name => 'Teste', :number => 11)
+      v = User.using(:master).create!(:name => 'Teste', :number => 12)
+
+      expect(User.using(:master).sum(:number)).to eq(12)
+      expect(User.using(:brazil).sum(:number)).to eq(11)
+
+      expect(User.where(id: v.id).sum(:number)).to eq(12)
+      expect(User.using(:brazil).where(id: u.id).sum(:number)).to eq(11)
+      expect(User.using(:master).where(id: v.id).sum(:number)).to eq(12)
     end
 
     describe 'any?' do
@@ -483,19 +500,35 @@ describe Octopus::Model do
       expect(user.as_json(:except => [:created_at, :updated_at, :id])).to eq('admin' => nil, 'name' => 'User1', 'number' => nil)
     end
 
-    it 'transaction' do
-      _u = User.create!(:name => 'Thiago')
+    describe 'transaction' do
+      context 'without assigning a database' do
+        it 'works as expected' do
+          _u = User.create!(:name => 'Thiago')
 
-      expect(User.using(:brazil).count).to eq(0)
-      expect(User.using(:master).count).to eq(1)
+          expect(User.using(:brazil).count).to eq(0)
+          expect(User.using(:master).count).to eq(1)
 
-      User.using(:brazil).transaction do
-        expect(User.find_by_name('Thiago')).to be_nil
-        User.create!(:name => 'Brazil')
+          User.using(:brazil).transaction do
+            expect(User.find_by_name('Thiago')).to be_nil
+            User.create!(:name => 'Brazil')
+          end
+
+          expect(User.using(:brazil).count).to eq(1)
+          expect(User.using(:master).count).to eq(1)
+        end
       end
 
-      expect(User.using(:brazil).count).to eq(1)
-      expect(User.using(:master).count).to eq(1)
+      context 'when assigning a database' do
+        it 'works as expected' do
+          klass = User.using(:brazil)
+
+          klass.transaction do
+            klass.create!(:name => 'Brazil')
+          end
+
+          expect(klass.find_by_name('Brazil')).to be_present
+        end
+      end
     end
 
     describe "#finder methods" do
@@ -505,7 +538,7 @@ describe Octopus::Model do
         @user3 = User.using(:brazil).create!(:name => 'User3')
       end
 
-      it "#find_each should work" do
+      it "#find_each should work with a block" do
         result_array = []
 
         User.using(:brazil).where("name is not NULL").find_each do |user|
@@ -515,10 +548,60 @@ describe Octopus::Model do
         expect(result_array).to eq([@user1, @user2, @user3])
       end
 
-      it "#find_in_batches, should work" do
+      it "#find_each should work with a where.not(...)" do
+        result_array = []
+
+        User.using(:brazil).where.not(:name => 'User2').find_each do |user|
+          result_array << user
+        end
+
+        expect(result_array).to eq([@user1, @user3])
+      end
+
+      it "#find_each should work as an enumerator" do
+        result_array = []
+
+        User.using(:brazil).where("name is not NULL").find_each.each do |user|
+          result_array << user
+        end
+
+        expect(result_array).to eq([@user1, @user2, @user3])
+      end
+
+      it "#find_each should work as a lazy enumerator" do
+        result_array = []
+
+        User.using(:brazil).where("name is not NULL").find_each.lazy.each do |user|
+          result_array << user
+        end
+
+        expect(result_array).to eq([@user1, @user2, @user3])
+      end
+
+      it "#find_in_batches should work with a block" do
         result_array = []
 
         User.using(:brazil).where("name is not NULL").find_in_batches(batch_size: 1) do |user|
+          result_array << user
+        end
+
+        expect(result_array).to eq([[@user1], [@user2], [@user3]])
+      end
+
+      it "#find_in_batches should work as an enumerator" do
+        result_array = []
+
+        User.using(:brazil).where("name is not NULL").find_in_batches(batch_size: 1).each do |user|
+          result_array << user
+        end
+
+        expect(result_array).to eq([[@user1], [@user2], [@user3]])
+      end
+
+      it "#find_in_batches should work as a lazy enumerator" do
+        result_array = []
+
+        User.using(:brazil).where("name is not NULL").find_in_batches(batch_size: 1).lazy.each do |user|
           result_array << user
         end
 
